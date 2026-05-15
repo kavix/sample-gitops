@@ -5,24 +5,25 @@ metadata:
   namespace: default
 spec:
   container:
-    image: host.k3d.internal:10082/doclet-frontend-image:v1-4a2acc61
-  endpoints:
-    http:
-      type: HTTP
-      port: 80
-      visibility: [external]
+    image: host.k3d.internal:10082/doclet-frontend-image:v1-6e0156a1
   dependencies:
     endpoints:
-      - component: document-svc
-        name: http
-        visibility: project
-        envBindings:
-          address: DOC_SERVICE_URL
-      - component: collab-svc
-        name: http
-        visibility: project
-        envBindings:
-          address: COLLAB_SERVICE_URL
+    - component: document-svc
+      envBindings:
+        address: DOC_SERVICE_URL
+      name: http
+      visibility: project
+    - component: collab-svc
+      envBindings:
+        address: COLLAB_SERVICE_URL
+      name: http
+      visibility: project
+  endpoints:
+    http:
+      port: 80
+      type: HTTP
+      visibility:
+      - external
   owner:
     componentName: frontend
     projectName: doclet
