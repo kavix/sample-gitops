@@ -19,6 +19,8 @@ spec:
     parameters:
       componentName: "collab-svc"
       projectName: "doclet"
+      gitopsRepoUrl: "https://github.com/openchoreo/sample-gitops"
+      gitopsBranch: "main"
       repository:
         url: "https://github.com/openchoreo/sample-workloads.git"
         revision:

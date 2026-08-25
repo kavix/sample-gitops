@@ -2,7 +2,7 @@
 
 This directory contains OpenChoreo Workflow definitions that automate building, releasing, and promoting components through a GitOps-driven CI/CD pipeline.
 
-## Available Workflows overview
+## Available Workflows Overview
 
 | Workflow | Purpose | Build Method |
 |---|---|---|
@@ -12,7 +12,43 @@ This directory contains OpenChoreo Workflow definitions that automate building, 
 | [bulk-gitops-release](#bulk-gitops-release) | Promote existing releases to a target environment | N/A (no build) |
 
 > [!NOTE]  
-> To learn more about how OpenChoreo workflows work, please refer to the [documentation](https://openchoreo.dev/).
+> To learn more about how OpenChoreo workflows work, please refer to the [official documentation](https://openchoreo.dev/).
+
+---
+
+## Repository Roles & Architecture
+
+OpenChoreo workflows distinguish between two repository destinations:
+
+- **Application Source Repository (`repository.url`)**: Contains the application code (e.g. `https://github.com/openchoreo/sample-workloads.git`). Cloned during the **build phase**. Public repositories do not require a git token; private source repositories use `secret/git-token`.
+- **GitOps Destination Repository (`gitopsRepoUrl`)**: Contains the infrastructure and deployment manifests (e.g. `https://github.com/<your-github-username>/sample-gitops.git`). Cloned during the **release phase** to generate release manifests and open pull requests using `secret/gitops-token`.
+
+---
+
+## Secret Prerequisites (OpenBao & ESO)
+
+These workflows rely on the **External Secrets Operator (ESO)** and a `ClusterSecretStore` named `default` to synchronize secrets from OpenBao into per-WorkflowRun Kubernetes Secrets:
+
+| Secret Key / Remote Path | Property | Required By | Purpose | Volume Behavior |
+|---|---|---|---|---|
+| `secret/git-token` | `git-token` | Build phase (source clone) | Authenticate to private application source repos | **Optional**; workflows fall back to public unauthenticated clone if secret is omitted. |
+| `secret/gitops-token` | `git-token` | Release phase & bulk promotion | Authenticate to GitOps repo, push branches, and create PRs | **Mandatory**; workflow pods will wait for secret synchronization. |
+
+To populate secrets in OpenBao:
+
+```bash
+# Secret for private application source repositories (optional for public repos)
+kubectl exec -n openbao openbao-0 -- bao kv put secret/git-token git-token=<your_github_pat>
+
+# Secret for GitOps repository release and PR operations (mandatory)
+kubectl exec -n openbao openbao-0 -- bao kv put secret/gitops-token git-token=<your_github_pat>
+```
+
+> [!IMPORTANT]
+> **Flux vs. Workflow Credentials:**
+> Secrets in OpenBao authenticate OpenChoreo workflow pods. If your GitOps repository is private, Flux `source-controller` requires its own Kubernetes secret in the `flux-system` namespace.
+
+---
 
 ## Build and Release Workflows
 
@@ -22,41 +58,23 @@ The following build-and-release workflows automate the build and deployment of O
 2. [google-cloud-buildpacks-gitops-release](#google-cloud-buildpacks-gitops-release)
 3. [react-gitops-release](#react-gitops-release)
 
-All three workflows follow the same high-level pattern. The main difference is how the container image is built.
+All three workflows follow the same high-level execution pattern:
 
 **Build phase**
-1. Clone the source repository (private repositories are supported through a git token).
-2. Build the container image using the workflow-specific method.
-3. Push the image to the container registry.
-4. Extract the workload descriptor from the source repository.
+1. **`clone-source`**: Clones the source repository (supports private repositories via optional `git-token`).
+2. **`build-image`**: Builds the container image using the workflow-specific builder.
+3. **`push-image`**: Pushes the container image to the internal registry.
+4. **`extract-descriptor`**: Extracts the workload descriptor from the source repository.
 
 **Release phase**
-1. Clone the GitOps repository.
-2. Create a feature branch (`release/<component>-<timestamp>`).
-3. Generate the GitOps resources (`Workload`, `ComponentRelease`, and `ReleaseBinding`) using the `occ` CLI.
-4. Commit the changes, push the branch, and create a pull request.
-
-Merging the PR triggers the CD tool to sync the changes, deploying the component to the target environment.
-
-> [!TIP]
-> These workflows require git tokens stored in a `ClusterSecretStore`:
->
-> | Secret Key | Required By | Purpose |
-> |---|---|---|
-> | `git-token` | Build & release workflows | Clone private source repos |
-> | `gitops-token` | All workflows | Push branches and create PRs in GitOps repo |
-
-### Configuration
-
-Before using the build-and-release workflows, update the hardcoded `gitops-repo-url` value in each workflow definition so it points to your GitOps repository fork.
-
-### Running the Workflows
-
-The YAML snippets below are runnable `WorkflowRun` manifests, not just reference examples. Save a manifest to a file, update the parameter values for your component, and apply it with `kubectl apply -f <file>`. 
+1. **`clone-gitops`**: Clones the target GitOps repository using `gitops-token`.
+2. **`create-feature-branch`**: Creates a release feature branch (`release/<component>-<timestamp>`).
+3. **`generate-gitops-resources`**: Generates GitOps manifests (`Workload`, `ComponentRelease`, `ReleaseBinding`) using the `occ` CLI.
+4. **`git-commit-push-pr`**: Commits changes, pushes the feature branch, and creates a pull request.
 
 ---
 
-#### docker-gitops-release
+### docker-gitops-release
 
 Workflow definition: [`docker-with-gitops-release.yaml`](./docker-with-gitops-release.yaml)
 
@@ -64,21 +82,21 @@ Use when your source repository has a **Dockerfile**.
 
 **Parameters:**
 
-| Parameter                    | Type   | Required | Default         | Description                                                      |
-|------------------------------|--------|----------|-----------------|------------------------------------------------------------------|
-| `componentName`              | string | yes      |                 | Component name                                                   |
-| `projectName`                | string | yes      |                 | Project name                                                     |
-| `repository.url`             | string | yes      |                 | Source repository URL                                            |
-| `repository.revision.branch` | string | no       | `main`          | Source repository branch to check out                            |
-| `repository.revision.commit` | string | yes      |                 | Source repository Git commit SHA or reference                    |
-| `repository.appPath`         | string | no       | `.`             | Application path within the source repository                    |
-| `docker.context`             | string | no       | `.`             | Docker build context relative to the source repository root      |
-| `docker.filePath`            | string | no       | `./Dockerfile`  | Dockerfile path relative to the source repository root           |
-| `workloadDescriptorPath`     | string | no       | `workload.yaml` | Path to the workload descriptor relative to `repository.appPath` |
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `componentName` | string | yes | | Component name |
+| `projectName` | string | yes | | Project name |
+| `gitopsRepoUrl` | string | no | `https://github.com/openchoreo/sample-gitops` | GitOps repository URL |
+| `gitopsBranch` | string | no | `main` | GitOps repository branch |
+| `repository.url` | string | yes | | Source repository URL |
+| `repository.revision.branch` | string | no | `main` | Source repository branch to check out |
+| `repository.revision.commit` | string | yes | | Source repository Git commit SHA or reference |
+| `repository.appPath` | string | no | `.` | Application path within the source repository |
+| `docker.context` | string | no | `.` | Docker build context relative to the source repository root |
+| `docker.filePath` | string | no | `./Dockerfile` | Dockerfile path relative to the source repository root |
+| `workloadDescriptorPath` | string | no | `workload.yaml` | Path to workload descriptor relative to `repository.appPath` |
 
 **WorkflowRun manifest:**
-
-Save the following manifest as `docker-gitops-release-run.yaml`, update the repository, commit, and path values for your component, and run `kubectl apply -f docker-gitops-release-run.yaml`.
 
 ```yaml
 apiVersion: openchoreo.dev/v1alpha1
@@ -93,6 +111,8 @@ spec:
     parameters:
       componentName: greeter-service
       projectName: demo-project
+      gitopsRepoUrl: https://github.com/<your-github-username>/sample-gitops
+      gitopsBranch: main
       repository:
         url: https://github.com/openchoreo/sample-workloads.git
         revision:
@@ -107,7 +127,7 @@ spec:
 
 ---
 
-#### google-cloud-buildpacks-gitops-release
+### google-cloud-buildpacks-gitops-release
 
 Workflow definition: [`google-cloud-buildpacks-gitops-release.yaml`](./google-cloud-buildpacks-gitops-release.yaml)
 
@@ -121,13 +141,15 @@ Supported languages: Go, Java (Maven/Gradle), Node.js, Python, .NET Core, Ruby, 
 |---|---|---|---|---|
 | `componentName` | string | yes | | Component name |
 | `projectName` | string | yes | | Project name |
+| `gitopsRepoUrl` | string | no | `https://github.com/openchoreo/sample-gitops` | GitOps repository URL |
+| `gitopsBranch` | string | no | `main` | GitOps repository branch |
 | `repository.url` | string | yes | | Source repository URL |
 | `repository.revision.branch` | string | no | `main` | Branch to check out |
 | `repository.revision.commit` | string | yes | | Git commit SHA or reference |
 | `repository.appPath` | string | no | `.` | Application path within the repository |
 | `buildpacks.builderImage` | string | no | `gcr.io/buildpacks/builder:v1` | Buildpacks builder image |
 | `buildpacks.env` | string[] | no | `[]` | Build-time environment variables in `KEY=VALUE` format |
-| `workloadDescriptorPath` | string | no | `workload.yaml` | Path to the workload descriptor relative to `repository.appPath` |
+| `workloadDescriptorPath` | string | no | `workload.yaml` | Path to workload descriptor relative to `repository.appPath` |
 
 **Example WorkflowRun manifest:**
 
@@ -144,6 +166,8 @@ spec:
     parameters:
       componentName: reading-list-service
       projectName: demo-project
+      gitopsRepoUrl: https://github.com/<your-github-username>/sample-gitops
+      gitopsBranch: main
       repository:
         url: https://github.com/openchoreo/sample-workloads.git
         revision:
@@ -158,7 +182,7 @@ spec:
 
 ---
 
-#### react-gitops-release
+### react-gitops-release
 
 Workflow definition: [`react-gitops-release.yaml`](./react-gitops-release.yaml)
 
@@ -170,6 +194,8 @@ Use for **React and SPA** applications. Builds the app with Node.js, packages it
 |---|---|---|---|---|
 | `componentName` | string | yes | | Component name |
 | `projectName` | string | yes | | Project name |
+| `gitopsRepoUrl` | string | no | `https://github.com/openchoreo/sample-gitops` | GitOps repository URL |
+| `gitopsBranch` | string | no | `main` | GitOps repository branch |
 | `repository.url` | string | yes | | Source repository URL |
 | `repository.revision.branch` | string | no | `main` | Branch to check out |
 | `repository.revision.commit` | string | yes | | Git commit SHA or reference |
@@ -177,7 +203,7 @@ Use for **React and SPA** applications. Builds the app with Node.js, packages it
 | `react.nodeVersion` | string | no | `18` | Node.js version (`16`, `18`, `20`, `22`) |
 | `react.buildCommand` | string | no | `npm run build` | Build command |
 | `react.outputDir` | string | no | `build` | Frontend build output directory |
-| `workloadDescriptorPath` | string | no | `workload.yaml` | Path to the workload descriptor relative to `repository.appPath` |
+| `workloadDescriptorPath` | string | no | `workload.yaml` | Path to workload descriptor relative to `repository.appPath` |
 
 **Example WorkflowRun manifest:**
 
@@ -194,6 +220,8 @@ spec:
     parameters:
       componentName: frontend
       projectName: demo-project
+      gitopsRepoUrl: https://github.com/<your-github-username>/sample-gitops
+      gitopsBranch: main
       repository:
         url: https://github.com/openchoreo/sample-workloads.git
         revision:
@@ -211,28 +239,22 @@ spec:
 
 ## Promotion Workflow
 
-This sample workflow automates the promotion of components from one environment to another in an OpenChoreo GitOps setup.
-
-> [!TIP]
-> This workflow requires a `gitops-token` stored in a `ClusterSecretStore` to push branches and create PRs in the GitOps repository.
-
 ### bulk-gitops-release
 
 Workflow definition: [`bulk-gitops-release.yaml`](./bulk-gitops-release.yaml)
 
-Use to **promote existing releases** to a target environment. Does not build anything — generates ReleaseBindings for components that already have ComponentReleases.
-This workflow can be used to promote all components in a namespace or all components in a specific project.
+Use to **promote existing releases** to a target environment. Does not build images — generates `ReleaseBinding` manifests for components that already have `ComponentRelease` resources.
 
 **Parameters:**
 
-| Parameter                   | Type    | Required | Default       | Description                                                               |
-|-----------------------------|---------|----------|---------------|---------------------------------------------------------------------------|
-| `scope.all`                 | boolean | no       | `false`       | Promote all projects                                                      |
-| `scope.projectName`         | string  | yes      |               | Project name to promote; still required as a placeholder when `all: true` |
-| `gitops.repositoryUrl`      | string  | yes      |               | GitOps repository URL                                                     |
-| `gitops.branch`             | string  | no       | `main`        | GitOps repository branch                                                  |
-| `gitops.targetEnvironment`  | string  | no       | `development` | Target environment name                                                   |
-| `gitops.deploymentPipeline` | string  | yes      |               | Deployment pipeline name                                                  |
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `scope.all` | boolean | no | `false` | Promote all projects |
+| `scope.projectName` | string | yes | | Project name to promote; required placeholder when `all: true` |
+| `gitops.repositoryUrl` | string | yes | | GitOps repository URL |
+| `gitops.branch` | string | no | `main` | GitOps repository branch |
+| `gitops.targetEnvironment` | string | no | `development` | Target environment name |
+| `gitops.deploymentPipeline` | string | yes | | Deployment pipeline name |
 
 **Example WorkflowRun manifest for promoting a single project to staging:**
 
@@ -251,31 +273,56 @@ spec:
         all: false
         projectName: doclet
       gitops:
-        repositoryUrl: "https://github.com/<your-org>/sample-gitops"
+        repositoryUrl: "https://github.com/<your-github-username>/sample-gitops"
         branch: main
         targetEnvironment: staging
         deploymentPipeline: standard
 ```
 
-**Example WorkflowRun manifest for promoting all components**
+---
 
-```yaml
-apiVersion: openchoreo.dev/v1alpha1
-kind: WorkflowRun
-metadata:
-  name: promote-all-prod-001
-  namespace: default
-spec:
-  workflow:
-    name: bulk-gitops-release
-    kind: Workflow
-    parameters:
-      scope:
-        all: true
-        projectName: placeholder
-      gitops:
-        repositoryUrl: "https://github.com/<your-org>/sample-gitops"
-        branch: main
-        targetEnvironment: production
-        deploymentPipeline: standard
+## Troubleshooting & Diagnostics
+
+If a workflow execution is stuck, fails during clone/checkout, or encounters authentication issues, follow this guide to isolate and resolve the issue.
+
+### Diagnostic Command Workflow
+
+```bash
+# 1. Check WorkflowRun status and rendered Argo Workflow reference
+kubectl get workflowrun <workflowrun-name> -n default -o yaml
+
+# 2. Check Argo Workflows in the cluster
+kubectl get workflows.argoproj.io -A
+
+# 3. Check Workflow pods and status
+kubectl get pods -A
+kubectl describe pod -n <workflow-namespace> <pod-name>
+
+# 4. Check ExternalSecrets Operator & ClusterSecretStore
+kubectl get pods -A | grep -i external-secrets
+kubectl get clustersecretstore default
+kubectl describe clustersecretstore default
+
+# 5. Check ExternalSecrets created for the WorkflowRun
+kubectl get externalsecret -A
+kubectl describe externalsecret <workflowrun-name>-source-git-secret -n default
+kubectl describe externalsecret <workflowrun-name>-gitops-git-secret -n default
+
+# 6. Verify generated Secrets (safe byte count check, never echo credentials)
+kubectl get secret <workflowrun-name>-source-git-secret -n default
+kubectl get secret <workflowrun-name>-gitops-git-secret -n default
+kubectl get secret <workflowrun-name>-gitops-git-secret -n default -o jsonpath='{.data.git-token}' | base64 -d | wc -c
+
+# 7. Follow workflow execution logs
+argo logs <workflow-name> -n <workflow-namespace> --follow
 ```
+
+### Error-to-Cause Reference Table
+
+| Error / Symptom | Potential Root Cause | Resolution |
+|---|---|---|
+| Pod stuck in `ContainerCreating` or `FailedMount` on `gitops-git-credentials` | `ExternalSecret` failed to sync `<workflowrun>-gitops-git-secret` from OpenBao. ESO is not running, `ClusterSecretStore/default` is unready, or `secret/gitops-token` is missing. | Verify ESO pod status, verify `kubectl describe clustersecretstore default`, and ensure `secret/gitops-token` is created in OpenBao with property `git-token`. |
+| `clone-source` fails with HTTP 401/403 `Authentication failed` | Private source repository specified but `secret/git-token` has an invalid token or insufficient read permissions. | Update `secret/git-token` in OpenBao with a valid GitHub PAT with `repo` read access. |
+| `clone-gitops` fails with HTTP 404 `Repository not found` | `gitopsRepoUrl` is pointing to `openchoreo/sample-gitops` (upstream) instead of the user fork, or repository URL is incorrect. | Explicitly pass `gitopsRepoUrl: https://github.com/<your-github-username>/sample-gitops` in the `WorkflowRun` parameters. |
+| `clone-gitops` or `git-commit-push-pr` fails with HTTP 401/403 or `Permission denied` | `secret/gitops-token` PAT has expired or lacks write permissions (`repo` scope) to create branches and PRs on the fork. | Generate a GitHub PAT with `repo` scope and store it in OpenBao: `kubectl exec -n openbao openbao-0 -- bao kv put secret/gitops-token git-token=<pat>`. |
+| Network error `Could not resolve host: github.com` | Kubernetes DNS or egress connectivity failure from the workflow pod. | Check CoreDNS pods (`kubectl get pods -n kube-system -l k8s-app=kube-dns`) and node network egress settings. |

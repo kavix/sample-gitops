@@ -26,6 +26,14 @@ spec:
         projectName:
           type: string
           description: "Project name"
+        gitopsRepoUrl:
+          type: string
+          default: https://github.com/openchoreo/sample-gitops
+          description: "GitOps repository URL"
+        gitopsBranch:
+          type: string
+          default: main
+          description: "GitOps repository branch"
         repository:
           type: object
           required:
@@ -98,11 +106,11 @@ spec:
             value: ${parameters.buildpacks.builderImage}
           - name: build-env
             value: ${parameters.buildpacks.env}
-          # PE-controlled hardcoded parameters
+          # GitOps repository parameters
           - name: gitops-repo-url
-            value: https://github.com/openchoreo/sample-gitops # Replace with your gitops repository URL
+            value: ${parameters.gitopsRepoUrl}
           - name: gitops-branch
-            value: main
+            value: ${parameters.gitopsBranch}
           # GitOps git secret (for private repos and PR creation)
           - name: gitops-git-secret
             value: ${metadata.workflowRunName}-gitops-git-secret
